@@ -7,48 +7,73 @@ use Illuminate\Http\Request;
 use App\Models\Product;
 use App\Models\ProductGallery;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\DB;
 
 class ProductController extends Controller
 {
     public function index()
     {
-        return response()->json(Product::with(['category', 'galleries'])->latest()->get());
+        $products = Product::with(['category', 'galleries', 'reviews'])->latest()->get();
+
+        foreach ($products as $product) {
+            $realSoldCount = DB::table('order_items')
+                ->join('orders', 'order_items.order_id', '=', 'orders.id')
+                ->where('order_items.product_id', $product->id)
+                ->where(function ($query) {
+                    $query->where('orders.status', 'completed')
+                          ->orWhere('orders.status', 'selesai')
+                          ->orWhere('orders.status', 'Selesai');
+                })
+                ->sum('order_items.quantity');
+
+            $newSold = max((int) $product->sold_count, (int) $realSoldCount);
+            
+            // Fallback: Jika terjual 0 tapi ulasan ada, pastikan jumlah terjual = jumlah ulasan
+            $reviewCount = $product->reviews->count();
+            if ($newSold == 0 && $reviewCount > 0) {
+                $newSold = $reviewCount;
+            }
+
+            if ($newSold != $product->sold_count) {
+                DB::table('products')->where('id', $product->id)->update(['sold_count' => $newSold]);
+            }
+
+            // WAJIB: Paksa atribut masuk ke dalam Response JSON Frontend
+            $product->setAttribute('sold_count', $newSold);
+            
+            // Opsional: Hitung rata-rata rating dari backend
+            $avgRating = $product->reviews->avg('rating') ?: 0;
+            $product->setAttribute('rating', round($avgRating, 1));
+        }
+
+        return response()->json($products);
     }
 
     public function store(Request $request)
     {
-        // 1. Validasi
         $request->validate([
             'name'        => 'required',
             'price'       => 'required|numeric',
             'stock'       => 'required|numeric',
             'category_id' => 'required',
-            'image'       => 'nullable|image|max:5120',
-            // Kita validasi 'gallery' sebagai file (karena dikirim sebagai array file)
-            'gallery.*'   => 'image|max:5120', 
+            'image'       => 'nullable|image|max:10240',
+            'gallery.*'   => 'image|max:10240',
         ]);
 
         $data = $request->except('gallery');
 
-        // 2. Simpan Foto Utama (Sampul)
         if ($request->hasFile('image')) {
             $path = $request->file('image')->store('products', 'public');
             $data['image_url'] = url('storage/' . $path);
         } else {
-            $data['image_url'] = 'https://placehold.co/400'; 
+            $data['image_url'] = 'https://placehold.co/400';
         }
 
         $product = Product::create($data);
 
-        // 3. SIMPAN FOTO TAMBAHAN (GALLERY)
-        // PENTING: React mengirim 'gallery[]', Laravel membacanya sebagai 'gallery'
         if ($request->hasFile('gallery')) {
-            $files = $request->file('gallery');
-            foreach ($files as $file) {
-                // Simpan file fisik
+            foreach ($request->file('gallery') as $file) {
                 $galleryPath = $file->store('product_galleries', 'public');
-                
-                // Simpan ke database
                 ProductGallery::create([
                     'product_id' => $product->id,
                     'image_url'  => url('storage/' . $galleryPath)
@@ -62,14 +87,14 @@ class ProductController extends Controller
     public function update(Request $request, $id)
     {
         $product = Product::findOrFail($id);
-        
+
         $request->validate([
-            'gallery.*' => 'image|max:5120',
+            'image'       => 'nullable|image|max:10240',
+            'gallery.*'   => 'image|max:10240',
         ]);
 
-        $data = $request->except(['image', 'gallery', '_method']); 
+        $data = $request->except(['image', 'gallery', '_method']);
 
-        // Update Foto Utama
         if ($request->hasFile('image')) {
             if ($product->image_url && !str_contains($product->image_url, 'placehold.co')) {
                 $oldPath = str_replace(url('storage/'), '', $product->image_url);
@@ -81,10 +106,8 @@ class ProductController extends Controller
 
         $product->update($data);
 
-        // UPDATE/TAMBAH FOTO TAMBAHAN
         if ($request->hasFile('gallery')) {
-            $files = $request->file('gallery');
-            foreach ($files as $file) {
+            foreach ($request->file('gallery') as $file) {
                 $galleryPath = $file->store('product_galleries', 'public');
                 ProductGallery::create([
                     'product_id' => $product->id,
@@ -98,17 +121,47 @@ class ProductController extends Controller
 
     public function show($id)
     {
-        return response()->json(Product::with(['category', 'galleries', 'reviews.user', 'reviews.images'])->findOrFail($id));
+        $product = Product::with(['category', 'galleries', 'reviews.user', 'reviews.images'])->findOrFail($id);
+
+        // Sinkronisasi sold_count dari order yang sudah selesai
+        $realSoldCount = DB::table('order_items')
+            ->join('orders', 'order_items.order_id', '=', 'orders.id')
+            ->where('order_items.product_id', $id)
+            ->where(function ($query) {
+                $query->where('orders.status', 'completed')
+                      ->orWhere('orders.status', 'selesai')
+                      ->orWhere('orders.status', 'Selesai');
+            })
+            ->sum('order_items.quantity');
+
+        $newSold = max((int) $product->sold_count, (int) $realSoldCount);
+        
+        $reviewCount = $product->reviews->count();
+        if ($newSold == 0 && $reviewCount > 0) {
+            $newSold = $reviewCount;
+        }
+
+        if ($newSold != $product->sold_count) {
+            $product->sold_count = $newSold;
+            $product->save();
+        }
+
+        // WAJIB: Paksa atribut masuk ke dalam Response JSON Frontend
+        $product->setAttribute('sold_count', $newSold);
+        $avgRating = $product->reviews->avg('rating') ?: 0;
+        $product->setAttribute('rating', round($avgRating, 1));
+
+        return response()->json($product);
     }
 
     public function destroy($id)
     {
         $product = Product::with('galleries')->findOrFail($id);
         if ($product->image_url && !str_contains($product->image_url, 'placehold.co')) {
-             Storage::disk('public')->delete(str_replace(url('storage/'), '', $product->image_url));
+            Storage::disk('public')->delete(str_replace(url('storage/'), '', $product->image_url));
         }
         foreach ($product->galleries as $gallery) {
-             Storage::disk('public')->delete(str_replace(url('storage/'), '', $gallery->image_url));
+            Storage::disk('public')->delete(str_replace(url('storage/'), '', $gallery->image_url));
         }
         $product->delete();
         return response()->json(['message' => 'Dihapus']);

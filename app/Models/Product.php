@@ -4,17 +4,15 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes; 
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 class Product extends Model
 {
     use HasFactory, SoftDeletes;
 
-    /**
-     * Kolom yang boleh diisi secara massal (mass assignable).
-     */
     protected $fillable = [
         'name',
         'description',
@@ -23,53 +21,50 @@ class Product extends Model
         'image_url',
         'category_id',
         'weight',
-        'dimensions',   
+        'dimensions',
         'status',
-        'discount_percent', 
-        'discount_end_date'
+        'discount_percent',
+        'discount_end_date',
+        'sold_count'
     ];
 
-    /**
-     * Kolom yang harus dikonversi ke tipe data Carbon (tanggal)
-     */
-    protected $dates = ['deleted_at']; 
+    protected $dates = ['deleted_at'];
 
-    /**
-     * PENTING: Memberi tahu Laravel untuk selalu menyertakan 'product_code'
-     * setiap kali data produk diambil (JSON response).
-     */
-    protected $appends = ['product_code'];
+    protected $appends = ['product_code', 'total_sold'];
 
-    /**
-     * ACCESSOR: Membuat "Virtual Column" untuk kode produk.
-     */
     public function getProductCodeAttribute()
     {
-        if (!$this->id) {
-            return null;
-        }
         return 'PD' . str_pad($this->id, 3, '0', STR_PAD_LEFT);
     }
 
     /**
-     * Relasi ke Kategori
+     * Menghitung total sold dari order yang sudah selesai (status completed/selesai)
      */
+    public function getTotalSoldAttribute()
+    {
+        $realSoldCount = DB::table('order_items')
+            ->join('orders', 'order_items.order_id', '=', 'orders.id')
+            ->where('order_items.product_id', $this->id)
+            ->where(function ($query) {
+                $query->where('orders.status', 'completed')
+                      ->orWhere('orders.status', 'selesai')
+                      ->orWhere('orders.status', 'Selesai');
+            })
+            ->sum('order_items.quantity');
+
+        return max((int) $this->sold_count, (int) $realSoldCount);
+    }
+
     public function category(): BelongsTo
     {
         return $this->belongsTo(Category::class);
     }
 
-    /**
-     * Relasi ke Galeri Foto
-     */
     public function galleries(): HasMany
     {
         return $this->hasMany(ProductGallery::class);
     }
 
-    /**
-     * Relasi ke Wishlist
-     */
     public function wishlistedByUsers()
     {
         return $this->belongsToMany(User::class, 'wishlists');

@@ -4,7 +4,8 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
-use App\Models\Notification; 
+use App\Models\Notification;
+use App\Models\Product;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -50,7 +51,6 @@ class OrderController extends Controller
             'customer' => $order->user->name ?? 'Guest',
             'courier' => strtoupper(($order->shipping_courier ?? '') . ' ' . ($order->shipping_service ?? '')), 
             'shipping_cost' => $order->shipping_cost ?? 0,
-            // Mengambil tracking_number
             'resi' => $order->tracking_number ?? null,
             'tracking_number' => $order->tracking_number ?? null,
             'payment_method' => $order->payment_method, 
@@ -71,20 +71,33 @@ class OrderController extends Controller
 
     public function update(Request $request, $id)
     {
-        $order = Order::find($id);
+        $order = Order::with('items')->find($id);
         if ($order) {
             $oldStatus = $order->status;
-            $order->status = $request->status;
+            $newStatus = $request->status;
+            $order->status = $newStatus;
             $order->save();
 
-            // ✅ NOTIFIKASI KE USER JIKA STATUS BERUBAH
-            if ($oldStatus !== $request->status) {
+            // ✅ Tambah sold_count jika status menjadi completed / selesai
+            if (in_array($newStatus, ['completed', 'selesai', 'Selesai']) && !in_array($oldStatus, ['completed', 'selesai', 'Selesai'])) {
+                foreach ($order->items as $item) {
+                    $product = $item->product;
+                    if ($product) {
+                        $product->sold_count = ($product->sold_count ?? 0) + $item->quantity;
+                        $product->save();
+                    }
+                }
+            }
+
+            // ✅ Notifikasi
+            if ($oldStatus !== $newStatus) {
                 $statusText = [
                     'processing' => 'sedang diproses',
                     'shipped'    => 'sedang dalam pengiriman',
                     'completed'  => 'telah selesai dan diterima',
+                    'selesai'    => 'telah selesai dan diterima',
                     'cancelled'  => 'telah dibatalkan'
-                ][$request->status] ?? $request->status;
+                ][$newStatus] ?? $newStatus;
 
                 $invoice = $order->invoice_number ?? 'INV-'.$order->id;
 
@@ -102,7 +115,6 @@ class OrderController extends Controller
         return response()->json(['message' => 'Order not found'], 404);
     }
 
-    // === FUNGSI BARU: UPDATE NOMOR RESI PENGIRIMAN ===
     public function updateTracking(Request $request, $id)
     {
         $request->validate([
@@ -115,17 +127,14 @@ class OrderController extends Controller
             return response()->json(['message' => 'Pesanan tidak ditemukan'], 404);
         }
 
-        // Simpan nomor resi
         $order->tracking_number = $request->tracking_number;
         
-        // Opsional: Otomatis ubah status pesanan menjadi "Dikirim" jika admin isi resi
         if ($order->status === 'processing') {
              $order->status = 'shipped';
         }
         
         $order->save();
 
-        // ✅ KIRIM NOTIFIKASI KE PELANGGAN BAHWA RESI SUDAH DIUPDATE
         $invoice = $order->invoice_number ?? 'INV-'.$order->id;
         $courier = strtoupper($order->shipping_courier ?? 'Kurir');
 
