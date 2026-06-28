@@ -57,7 +57,12 @@ class ProductController extends Controller
             'stock'       => 'required|numeric',
             'category_id' => 'required',
             'image'       => 'nullable|image|max:10240',
+<<<<<<< HEAD
             'gallery.*'   => 'image|max:10240',
+=======
+            // Kita validasi 'gallery' sebagai file (karena dikirim sebagai array file)
+            'gallery.*'   => 'image|max:10240', 
+>>>>>>> 1bf70e54e96cab20b6e5b05daf16bb36485a1645
         ]);
 
         $data = $request->except('gallery');
@@ -89,8 +94,12 @@ class ProductController extends Controller
         $product = Product::findOrFail($id);
 
         $request->validate([
+<<<<<<< HEAD
             'image'       => 'nullable|image|max:10240',
             'gallery.*'   => 'image|max:10240',
+=======
+            'gallery.*' => 'image|max:10240',
+>>>>>>> 1bf70e54e96cab20b6e5b05daf16bb36485a1645
         ]);
 
         $data = $request->except(['image', 'gallery', '_method']);
